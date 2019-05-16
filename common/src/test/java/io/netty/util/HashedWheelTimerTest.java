@@ -17,6 +17,7 @@ package io.netty.util;
 
 import org.junit.Test;
 
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
@@ -129,7 +130,9 @@ public class HashedWheelTimerTest {
         }, 100, TimeUnit.MILLISECONDS);
 
         latch.await();
-        assertFalse(timer.stop().isEmpty());
+        Set<Timeout> unProcess = timer.stop();
+        System.out.println(((Set) unProcess).size());
+        assertFalse(unProcess.isEmpty());
     }
 
     @Test

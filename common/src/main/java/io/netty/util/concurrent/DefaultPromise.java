@@ -31,6 +31,12 @@ import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import static io.netty.util.internal.ObjectUtil.checkNotNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
+/**
+ * 该工具类可以支持通过2种方式获取 result
+ * 1) 设置 listener, 有结果时，通过listener 回调
+ * 2) promise.await().getNow(), await() 会阻塞直到有结果时反回该Promise，这时通过 getNow 直接获取结果
+ * 以上结论可以在setSuccess() 里看出端倪
+ */
 public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
     private static final InternalLogger logger = InternalLoggerFactory.getInstance(DefaultPromise.class);
     private static final InternalLogger rejectedExecutionLogger =
@@ -52,10 +58,17 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
      * If {@code null}, it means either 1) no listeners were added yet or 2) all listeners were notified.
      *
      * Threading - synchronized(this). We must support adding listeners when there is no EventExecutor.
+     *
+     * future 的 listener，当为null时，表示没有设置listener 或者 所有listener 都已经通知
+     * 考虑线程并发安全 - 对该字段的处理都加了锁
      */
     private Object listeners;
+
     /**
      * Threading - synchronized(this). We are required to hold the monitor to use Java's underlying wait()/notifyAll().
+     *
+     * monitor， 底层使用 java - wait/notify 机制
+     * 移步 checkNotifyWaiters() 的注释
      */
     private short waiters;
 
@@ -89,6 +102,10 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
         executor = null;
     }
 
+    /**
+     * 1. setSuccess0(result), 会在为result赋值成功后, 唤醒那些主动获取结果的线程(通过await())
+     * 2. notifyListeners(), 通过 notify 机制，回调注册进来的各个 listener 完成结果回传
+     */
     @Override
     public Promise<V> setSuccess(V result) {
         if (setSuccess0(result)) {
@@ -213,6 +230,12 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
         return this;
     }
 
+    /**
+     * await() 可被中断
+     * (WAITING 状态的线程在被中断时抛 InterruptedException)
+     *
+     * Waits for this future to be completed.
+     */
     @Override
     public Promise<V> await() throws InterruptedException {
         if (isDone()) {
@@ -227,7 +250,9 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
 
         synchronized (this) {
             while (!isDone()) {
+                //当太多线程在等待时，抛出异常
                 incWaiters();
+
                 try {
                     wait();
                 } finally {
@@ -238,6 +263,10 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
         return this;
     }
 
+    /**
+     * await() 不可被中断
+     * (WAITING 状态的线程在被中断时抛 InterruptedException)
+     */
     @Override
     public Promise<V> awaitUninterruptibly() {
         if (isDone()) {
@@ -261,6 +290,7 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
             }
         }
 
+        //重新标记线程中断状态
         if (interrupted) {
             Thread.currentThread().interrupt();
         }
@@ -385,6 +415,9 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
         return executor;
     }
 
+    /**
+     * 死锁检测: 自己唤醒自己的情形
+     */
     protected void checkDeadLock() {
         EventExecutor e = executor();
         if (e != null && e.inEventLoop()) {
@@ -463,6 +496,18 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
         });
     }
 
+    /**
+     * 立即通知 listeners - 当存在 listeners 需要被通知 && 还没有进行通知
+     * 1. listeners 和 notifyingListeners 都是被线程安全访问的(在 synchronize 语句块里赋值)
+     * 2. 注意 synchronize 的隔离粒度的控制, 仅仅在synchronize 里对变量进行赋值
+     *    真正的通知行为并没有在同步块里
+     *
+     * 那么会有并发的可能性吗？
+     * 在设置 success/failure, cancel 或者添加listener的时候会触发通知
+     * 在通知前会去判断是否 executor.inEventLoop, 一般情况下都是当前调用线程就是执行线程时才会执行通知
+     * 也就是说只有执行线程会去执行通知;
+     * 触发通知的线程和通知listener的线程一般情况下不是一个线程
+     */
     private void notifyListenersNow() {
         Object listeners;
         synchronized (this) {
@@ -545,12 +590,23 @@ public class DefaultPromise<V> extends AbstractFuture<V> implements Promise<V> {
         return false;
     }
 
+    /**
+     * 变量 waiters 作为同步信号, 由它的值来唤醒/阻塞线程 - 对 waiters 变量的读写都放在同步块里进行的
+     * netty's Future 的核心就是在有结果的时候来通知listener，也就是:
+     * result 被赋值的时候去通知各个listener, 赋值是通过 RESULT_UPDATER 来完成的:
+     * setSuccess, setFailure 以及cancel等方法；
+     * 当然，有阻塞线程的时候才去唤醒
+     * 当有线程调用 await() 方法的时候，就会被阻塞，直到被唤醒
+     */
     private synchronized void checkNotifyWaiters() {
         if (waiters > 0) {
             notifyAll();
         }
     }
 
+    /**
+     * monitor 自增, 当太多线程在等待时，抛出异常
+     */
     private void incWaiters() {
         if (waiters == Short.MAX_VALUE) {
             throw new IllegalStateException("too many waiters: " + this);

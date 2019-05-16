@@ -38,6 +38,8 @@ import java.util.NoSuchElementException;
  * <h3>Creation of a pipeline</h3>
  *
  * Each channel has its own pipeline and it is created automatically when a new channel is created.
+ * 每一个channel在创建的时候会自动创建一个属于它自己的channelPipeline
+ * channel的 inbound 事件和 outbound 操作会被channelPipeline上的ChannelHandler拦截处理
  *
  * <h3>How an event flows in a pipeline</h3>
  *
@@ -47,6 +49,7 @@ import java.util.NoSuchElementException;
  * {@link ChannelHandlerContext}, such as {@link ChannelHandlerContext#fireChannelRead(Object)} and
  * {@link ChannelHandlerContext#write(Object)}.
  *
+ * 通过定义在ChannelHandlerContext里的传播方法(比如fireChannelRead)将I/O 事件传递给最近的handler
  * <pre>
  *                                                 I/O Request
  *                                            via {@link Channel} or
@@ -92,12 +95,19 @@ import java.util.NoSuchElementException;
  * diagram.  The inbound data is often read from a remote peer via the actual input operation such as
  * {@link SocketChannel#read(ByteBuffer)}.  If an inbound event goes beyond the top inbound handler, it is discarded
  * silently, or logged if it needs your attention.
+ *
+ * inbound data 由 netty I/O 线程生成，然后由 inbound handler 去处理
  * <p>
  * An outbound event is handled by the outbound handler in the top-down direction as shown on the right side of the
  * diagram.  An outbound handler usually generates or transforms the outbound traffic such as write requests.
  * If an outbound event goes beyond the bottom outbound handler, it is handled by an I/O thread associated with the
  * {@link Channel}. The I/O thread often performs the actual output operation such as
  * {@link SocketChannel#write(ByteBuffer)}.
+ *
+ * outbound event 通常由 I/O 请求或 ChannelHandlerContext 生成, 由 outbound handler 处理
+ * outbound handler 通常产生或传递'出站'传递 比如'写'请求，
+ * 如果一个outbound event 溢出 channelPipeline，将会由 I/O 线程处理(channel 所绑定的线程)
+ *
  * <p>
  * For example, let us assume that we created the following pipeline:
  * <pre>
@@ -127,6 +137,8 @@ import java.util.NoSuchElementException;
  *
  * As you might noticed in the diagram shows, a handler has to invoke the event propagation methods in
  * {@link ChannelHandlerContext} to forward an event to its next handler.  Those methods include:
+ *
+ * handler 需要调用 context 里的事件传递方法将一个事件沿着链路传递
  * <ul>
  * <li>Inbound event propagation methods:
  *     <ul>
@@ -204,6 +216,9 @@ import java.util.NoSuchElementException;
  * // a time-consuming task.
  * // If your business logic is fully asynchronous or finished very quickly, you don't
  * // need to specify a group.
+ * // 告诉 pipeline 在一个非I/O线程里去执行MyBusinessLogicHandler里的方法
+ * // 这样做的目的是为了不让耗时的操作去阻塞 I/O线程
+ * // 当然如果业务逻辑纯异步执行或者非耗时的，就没必要这么做了
  * pipeline.addLast(group, "handler", new MyBusinessLogicHandler());
  * </pre>
  *
@@ -212,6 +227,8 @@ import java.util.NoSuchElementException;
  * A {@link ChannelHandler} can be added or removed at any time because a {@link ChannelPipeline} is thread safe.
  * For example, you can insert an encryption handler when sensitive information is about to be exchanged, and remove it
  * after the exchange.
+ *
+ * ChannelPipeline 是线程安全的，可以在任何时候添加或删除ChannelHandler
  */
 public interface ChannelPipeline
         extends ChannelInboundInvoker, ChannelOutboundInvoker, Iterable<Entry<String, ChannelHandler>> {

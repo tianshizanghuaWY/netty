@@ -17,6 +17,10 @@ package io.netty.util.concurrent;
 
 /**
  * Special {@link Future} which is writable.
+ *
+ * Promise 可以看作一个特殊的 Future, 在 future 的基础上加了一些写的特性
+ * : setSuccess(), trySuccess(), setFailure(), tryFailure()
+ * 同时 Promise 重写了 listener 的 add*（） remove*() 方法，以及 sync， wait 等
  */
 public interface Promise<V> extends Future<V> {
 
@@ -25,6 +29,9 @@ public interface Promise<V> extends Future<V> {
      * listeners.
      *
      * If it is success or failed already it will throw an {@link IllegalStateException}.
+     *
+     * 标记future为success，并通知所有listener
+     * 如果已经（success/failed），则抛出异常
      */
     Promise<V> setSuccess(V result);
 
@@ -35,6 +42,10 @@ public interface Promise<V> extends Future<V> {
      * @return {@code true} if and only if successfully marked this future as
      *         a success. Otherwise {@code false} because this future is
      *         already marked as either a success or a failure.
+     *
+     * 标记future为success，并通知所有listener
+     * 如果标记成功则返回true， 否则返回false（该future已经被标记（success/failture））
+     *
      */
     boolean trySuccess(V result);
 
@@ -43,6 +54,9 @@ public interface Promise<V> extends Future<V> {
      * listeners.
      *
      * If it is success or failed already it will throw an {@link IllegalStateException}.
+     *
+     * 标记future为failed，并通知所有listener
+     * 如果已经（success/failed），则抛出异常
      */
     Promise<V> setFailure(Throwable cause);
 
@@ -53,6 +67,9 @@ public interface Promise<V> extends Future<V> {
      * @return {@code true} if and only if successfully marked this future as
      *         a failure. Otherwise {@code false} because this future is
      *         already marked as either a success or a failure.
+     *
+     * 标记future为 failure，并通知所有listener
+     * 如果标记成功则返回true， 否则返回false（该future已经被标记（success/failture））
      */
     boolean tryFailure(Throwable cause);
 
@@ -61,6 +78,8 @@ public interface Promise<V> extends Future<V> {
      *
      * @return {@code true} if and only if successfully marked this future as uncancellable or it is already done
      *         without being cancelled.  {@code false} if this future has been cancelled already.
+     *  标记一个 future 不能被取消
+     *  如果已经被取消了，则返回 false
      */
     boolean setUncancellable();
 
