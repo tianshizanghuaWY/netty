@@ -47,6 +47,8 @@ public class FastThreadLocalTest {
         assertThat(var.get(), is(nullValue()));
         assertThat(FastThreadLocal.size(), is(1));
 
+        var.set(true);
+
         // And then remove it.
         FastThreadLocal.removeAll();
         assertThat(removed.get(), is(true));

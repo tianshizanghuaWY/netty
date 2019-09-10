@@ -40,15 +40,26 @@ import java.util.Set;
  *
  * @param <V> the type of the thread-local variable
  * @see ThreadLocal
+ *
+ * 该类被设计作为 ThreadLocal 的变种, 当从 FastThreadLocalThread 中访问对象时，会带来一定的性能优化
+ * 在访问一个变量时， FastThreadLocal 使用一个索引直接从数组中获取，而不用通过转换hashCode从hash table中寻找
+ * 当访问非常频繁当时候, 这个细微的变化会带来不错的性能提升
+ * 要使用这个特性，你必须使用 FastThreadLocalThread (DefaultThreadFactory 创建的线程都是该类型的)
+ * 当通过其他线程访问时，将使用原始的 ThreadLocal
  */
 public class FastThreadLocal<V> {
 
+    /**
+     * index : 总是为 0, 数组里的第一个索引里存的是 Set<FastThreadLocal> - 对应所有的
+     */
     private static final int variablesToRemoveIndex = InternalThreadLocalMap.nextVariableIndex();
 
     /**
      * Removes all {@link FastThreadLocal} variables bound to the current thread.  This operation is useful when you
      * are in a container environment, and you don't want to leave the thread local variables in the threads you do not
      * manage.
+     * 用来回收所有绑定在当前线程的所有 FastThreadLocal
+     * 当在容器环境中非常受用 - 当你不想保留一些变量在线程中
      */
     public static void removeAll() {
         InternalThreadLocalMap threadLocalMap = InternalThreadLocalMap.getIfSet();
@@ -89,11 +100,25 @@ public class FastThreadLocal<V> {
      * non-{@link FastThreadLocalThread}s.  This operation is useful when you are in a container environment, and you
      * do not want to leave the thread local variables in the threads you do not manage.  Call this method when your
      * application is being unloaded from the container.
+     *
+     * 当在非FastThreadLocalThread 线程里使用 FastThreadLocal 时，不想保留存储的变量时使用该方法
      */
     public static void destroy() {
         InternalThreadLocalMap.destroy();
     }
 
+    /**
+     * 添加变量, 当之前尚未存储任何变量时, 则创建一个 Set<FastThreadLocal<?>>
+     * 注意:
+     *   1. IdentityHashMap<FastThreadLocal<?>, Boolean> 也是一个 Map, 特性时，2个key是否相同的判断条件为 key1=key2，
+     *     非 key1.equals(key2)
+     *   2. Collections.newSetFromMap(Map) 返回的是个包装类:SetFromMap, 它也是 Set，
+     *      SetFromMap 的特性是它具备它所包装 Map 的属性, ex: 如果Map是ConcurrentHashMap，那么这个Set就具备并发安全性的特性，
+     *      因此这里的 Set 具备 IdentityMap 的特性，也就是元素相同的条件为 key1==key2
+     *
+     * variablesToRemove 底层是一个包装了 IdentityMap 的 SetFromMap
+     * 那么, 为什么不用 HashSet 呢 ????
+     */
     @SuppressWarnings("unchecked")
     private static void addToVariablesToRemove(InternalThreadLocalMap threadLocalMap, FastThreadLocal<?> variable) {
         Object v = threadLocalMap.indexedVariable(variablesToRemoveIndex);
@@ -122,6 +147,7 @@ public class FastThreadLocal<V> {
         variablesToRemove.remove(variable);
     }
 
+    // 唯一 index
     private final int index;
 
     public FastThreadLocal() {
@@ -138,6 +164,7 @@ public class FastThreadLocal<V> {
     /**
      * Returns the current value for the specified thread local map.
      * The specified thread local map must be for the current thread.
+     * 个人认为, 这个方法用 'public' 开放出来不合理
      */
     @SuppressWarnings("unchecked")
     public final V get(InternalThreadLocalMap threadLocalMap) {
@@ -175,6 +202,9 @@ public class FastThreadLocal<V> {
 
     /**
      * Set the value for the specified thread local map. The specified thread local map must be for the current thread.
+     * @param threadLocalMap 按照上面的翻译来看, 这个localMap 必须是当前线程的
+     * 该方法目前的调用放就2处, 一个是上面的 set(V), 另一个调用是ChannelOutboundBuffer.nioBuffers()(和set(V)一个语意)
+     * 个人认为, 这个方法用 'public' 开放出来不合理
      */
     public final void set(InternalThreadLocalMap threadLocalMap, V value) {
         if (value != InternalThreadLocalMap.UNSET) {
@@ -218,6 +248,8 @@ public class FastThreadLocal<V> {
             return;
         }
 
+        //这里为什么不在同一个方法里,做这2步操作呢?
+        //从 indexedVariables 移除 FastThreadLocal 和 其对应的 value, 应该是同一件'事'
         Object v = threadLocalMap.removeIndexedVariable(index);
         removeFromVariablesToRemove(threadLocalMap, this);
 

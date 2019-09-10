@@ -17,7 +17,10 @@ package io.netty.util;
 
 import org.junit.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Random;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.*;
@@ -39,11 +42,12 @@ public class RecyclerTest {
         Recycler<HandledObject> recycler = newRecycler(1024);
         HandledObject object = recycler.get();
         object.recycle();
-        object.recycle();
+        object.recycle();//重复回收时会报异常
     }
 
     @Test
     public void testRecycle() {
+        //回收的对象在被取出后，还可以再次被回收
         Recycler<HandledObject> recycler = newRecycler(1024);
         HandledObject object = recycler.get();
         object.recycle();
@@ -115,6 +119,57 @@ public class RecyclerTest {
 
         assertSame(recycler.get(), o);
         assertNotSame(recycler.get(), o2);
+    }
+
+    @Test
+    public void testDuplicateRecycleInDiffThread() throws InterruptedException{
+        final CountDownLatch c = new CountDownLatch(1);
+        final Recycler<HandledObject> recycler = newRecycler(1024);
+        final HandledObject obj = recycler.get();
+        obj.recycle();
+        assertSame(obj, recycler.get()); //这里获得的是上一步回收的
+        assertNotSame(obj, recycler.get()); //之前回收的已经被弹出, 这里get()拿到的是新创建的
+        new Thread(){
+            //线程A
+            @Override
+            public void run() {
+                obj.recycle(); // 这一步回收只会在[main]线程绑定的stack里的 WeakOrderQueue 里塞一个对象
+                HandledObject obj2 = recycler.get(); //线程A对应的stack是空的,也没有线程回收线程A创建的对象（WeakOrderQueue也是空的），
+                assertNotSame(obj, obj2); //obj2 也是新创建的
+                c.countDown();
+            }
+        }.start();
+
+        c.await(); //确保线程A跑完
+        HandledObject obj3 = recycler.get();
+        assertSame(obj, obj3);
+    }
+
+    //主要测试被另一个线程回收后，原有 stack 的变化
+    @Test(expected = IllegalStateException.class)
+    public void testDuplicateRecycleInDiffThread2() throws InterruptedException{
+        final CountDownLatch c = new CountDownLatch(1);
+        final Recycler<HandledObject> recycler = newRecycler(1024);
+        final HandledObject obj = recycler.get();
+        obj.recycle();  //往 stack 里塞了一个handle, handle.stack != null
+        new Thread(){
+            //线程A
+            @Override
+            public void run() {
+                //这里会将obj.handler.stack=null
+                //但是main线程对应stack里还是持有obj的
+                //这步会导致 handle.recycleId != handle.lastRecycleId
+                obj.recycle(); // 这一步回收只会在[main]线程绑定的stack里的 WeakOrderQueue 里塞一个对象
+
+                c.countDown();
+            }
+        }.start();
+
+        c.await(); //确保线程A跑完
+        HandledObject obj3 = recycler.get(); //由于andle.recycleId != handle.lastRecycleId 抛 "recycled multiple times" 异常
+        assertSame(obj, obj3);
+
+        //一个对象被不同线程回收后，在get()时会抛异常，实际应用场景中，怎样避免一个对象被重复回收呢
     }
 
     @Test
@@ -208,13 +263,48 @@ public class RecyclerTest {
 
     static final class HandledObject {
         Recycler.Handle<HandledObject> handle;
+        static final AtomicInteger ID = new AtomicInteger(1);
+        final Integer tag;
 
         HandledObject(Recycler.Handle<HandledObject> handle) {
             this.handle = handle;
+            this.tag = ID.getAndIncrement();
         }
 
         void recycle() {
             handle.recycle(this);
+        }
+        @Override
+        public String toString() {
+            return "HandleObject:" + tag;
+        }
+    }
+
+    @Test
+    public void tessRatioMask(){
+        int ratioMask = 8 - 1;
+        for(int i=0; i<100; i++){
+            System.out.println( i + " : " + ((i & ratioMask)));
+        }
+    }
+
+    //测试回收对象的概率
+    @Test
+    public void testRatioMask2(){
+        Recycler<HandledObject> recycler = newRecycler(1024);
+        List<HandledObject> list = new ArrayList();
+        for(int i=1; i < 9; i++){
+            HandledObject obj = recycler.get();
+            System.out.println("first time get obj:" + obj);
+            list.add(obj);
+        }
+        for(HandledObject obj : list){
+            obj.recycle();
+        }
+        //可以看出之前的8个对象只有一个被回收放入对象池
+        for(int i=1; i < 9; i++){
+            HandledObject obj = recycler.get();
+            System.out.println(obj);
         }
     }
 }
